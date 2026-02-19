@@ -1,0 +1,686 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum UserRole {
+  BUYER
+  SELLER
+  AGENT
+  AGENCY_ADMIN
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum ListingType {
+  SALE
+  RENT
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  UNDER_CONTRACT
+  SOLD
+  RENTED
+  WITHDRAWN
+  EXPIRED
+  DELETED
+}
+
+enum PropertyType {
+  HOUSE
+  APARTMENT
+  CONDO
+  TOWNHOUSE
+  LAND
+  COMMERCIAL
+  MULTI_FAMILY
+  MOBILE
+  OTHER
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  VIRTUAL_TOUR
+  FLOOR_PLAN
+  DOCUMENT
+}
+
+enum FeatureCategory {
+  INTERIOR
+  EXTERIOR
+  KITCHEN
+  BATHROOM
+  HEATING_COOLING
+  PARKING
+  COMMUNITY
+  ACCESSIBILITY
+  GREEN
+  SECURITY
+  VIEW
+}
+
+enum NotificationFrequency {
+  INSTANT
+  HOURLY
+  DAILY
+  WEEKLY
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  SHOWING_SCHEDULED
+  OFFER_MADE
+  CLOSED
+  LOST
+}
+
+// ============================================================================
+// USER & AUTH
+// ============================================================================
+
+model User {
+  id             String     @id @default(uuid())
+  clerkId        String     @unique  // Clerk user ID for authentication
+  email          String     @unique
+  emailVerified  Boolean    @default(false)
+  phone          String?    @unique
+  phoneVerified  Boolean    @default(false)
+  passwordHash   String?
+  firstName      String?
+  lastName       String?
+  avatar         String?    // Avatar URL from Clerk
+  avatarUrl      String?    // Legacy field, use avatar
+  locale         String     @default("en-US")
+  timezone       String     @default("UTC")
+  role           UserRole   @default(BUYER)
+  status         UserStatus @default(ACTIVE)
+
+  // OAuth IDs (managed by Clerk)
+  googleId   String? @unique
+  facebookId String? @unique
+  appleId    String? @unique
+
+  // Preferences stored as JSON
+  notificationPreferences Json @default("{}")
+  searchPreferences       Json @default("{}")
+
+  // Timestamps
+  lastLoginAt  DateTime?
+  lastActiveAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  // Relations
+  agent         Agent?
+  savedSearches SavedSearch[]
+  favorites     Favorite[]
+  leads         Lead[]
+  reviews       Review[]
+  notifications Notification[]
+
+  @@index([clerkId])
+  @@index([email])
+  @@index([role])
+  @@index([status])
+}
+
+// ============================================================================
+// AGENCY & AGENT
+// ============================================================================
+
+model Agency {
+  id          String  @id @default(uuid())
+  name        String
+  slug        String  @unique
+  logoUrl     String?
+  description String?
+
+  // Contact
+  email   String?
+  phone   String?
+  website String?
+
+  // Address
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  country      String  @default("DE")
+  latitude     Float?
+  longitude    Float?
+
+  // License
+  licenseNumber String?
+  licenseState  String?
+  licenseExpiry DateTime?
+
+  // Stats (denormalized)
+  totalAgents   Int     @default(0)
+  totalListings Int     @default(0)
+  totalSales    Int     @default(0)
+  avgRating     Decimal @default(0) @db.Decimal(3, 2)
+
+  // Timestamps
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  // Relations
+  agents   Agent[]
+  listings Listing[]
+
+  @@index([slug])
+}
+
+model Agent {
+  id          String  @id @default(uuid())
+  userId      String  @unique
+  agencyId    String?
+  displayName String?
+  bio         String?
+  headshotUrl String?
+
+  // Contact
+  workEmail String?
+  workPhone String?
+
+  // License
+  licenseNumber     String
+  licenseState      String
+  licenseType       String?
+  licenseExpiry     DateTime?
+  licenseVerified   Boolean   @default(false)
+  licenseVerifiedAt DateTime?
+
+  // Specializations
+  specializations String[]
+  serviceAreas    String[]
+  languages       String[] @default(["en"])
+
+  // Stats (denormalized)
+  totalListings           Int      @default(0)
+  activeListings          Int      @default(0)
+  totalSales              Int      @default(0)
+  totalVolume             Decimal  @default(0) @db.Decimal(15, 2)
+  avgRating               Decimal  @default(0) @db.Decimal(3, 2)
+  reviewCount             Int      @default(0)
+  avgResponseTimeMinutes  Int?
+
+  // Status
+  status   String  @default("pending")
+  featured Boolean @default(false)
+
+  // Timestamps
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agency   Agency?   @relation(fields: [agencyId], references: [id])
+  listings Listing[]
+  leads    Lead[]
+  reviews  Review[]
+
+  @@index([userId])
+  @@index([agencyId])
+  @@index([licenseNumber, licenseState])
+}
+
+// ============================================================================
+// LISTINGS
+// ============================================================================
+
+model Listing {
+  id String @id @default(uuid())
+
+  // External IDs
+  mlsId      String?
+  mlsSource  String?
+  externalId String?
+
+  // Ownership
+  agentId     String?
+  agencyId    String?
+  ownerUserId String?
+
+  // Type & Status
+  listingType ListingType
+  status      ListingStatus @default(DRAFT)
+
+  // Address
+  addressLine1   String
+  addressLine2   String?
+  city           String
+  state          String
+  postalCode     String
+  country        String  @default("DE")
+  neighborhoodId String?
+
+  // Location
+  latitude  Float
+  longitude Float
+
+  // Pricing
+  price         Decimal  @db.Decimal(15, 2)
+  pricePerSqm   Decimal? @db.Decimal(10, 2)
+  originalPrice Decimal? @db.Decimal(15, 2)
+  currency      String   @default("EUR")
+
+  // Property Details
+  propertyType    PropertyType
+  propertySubtype String?
+  bedrooms        Int?
+  bathrooms       Decimal? @db.Decimal(3, 1)
+  halfBaths       Int?     @default(0)
+  sqm             Int?
+  lotSqm          Int?
+  yearBuilt       Int?
+  stories         Int?
+  parkingSpaces   Int?
+  parkingType     String?
+
+  // Description
+  title       String?
+  headline    String?
+  description String?
+
+  // Energy
+  energyClass String?
+  energyScore Int?
+  hoaFee      Decimal? @db.Decimal(10, 2)
+  taxAmount   Decimal? @db.Decimal(10, 2)
+  taxYear     Int?
+
+  // Flags
+  isNewConstruction Boolean @default(false)
+  isForeclosure     Boolean @default(false)
+  isShortSale       Boolean @default(false)
+  isAuction         Boolean @default(false)
+  needsRenovation   Boolean @default(false)
+  acceptsOffers     Boolean @default(true)
+
+  // Virtual Tour
+  virtualTourUrl String?
+  videoUrl       String?
+  floorPlanUrl   String?
+
+  // Availability
+  availableDate  DateTime?
+  openHouseDates Json?
+
+  // Quality & Analytics
+  qualityScore Int @default(0)
+  viewCount    Int @default(0)
+  saveCount    Int @default(0)
+  inquiryCount Int @default(0)
+
+  // Timestamps
+  listedAt       DateTime?
+  soldAt         DateTime?
+  priceChangedAt DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  // Relations
+  agent        Agent?               @relation(fields: [agentId], references: [id])
+  agency       Agency?              @relation(fields: [agencyId], references: [id])
+  neighborhood Neighborhood?        @relation(fields: [neighborhoodId], references: [id])
+  media        ListingMedia[]
+  features     ListingFeature[]
+  priceHistory ListingPriceHistory[]
+  favorites    Favorite[]
+  leads        Lead[]
+
+  @@index([status])
+  @@index([listingType])
+  @@index([propertyType])
+  @@index([price])
+  @@index([bedrooms])
+  @@index([sqm])
+  @@index([city])
+  @@index([agentId])
+  @@index([agencyId])
+  @@index([neighborhoodId])
+  @@index([latitude, longitude])
+  @@index([listedAt])
+  @@index([mlsId, mlsSource])
+}
+
+model ListingMedia {
+  id        String    @id @default(uuid())
+  listingId String
+  type      MediaType
+  url       String
+  thumbnailUrl String?
+  caption      String?
+  altText      String?
+  sortOrder    Int       @default(0)
+  isPrimary    Boolean   @default(false)
+  width        Int?
+  height       Int?
+  fileSize     Int?
+  mimeType     String?
+
+  // AI Analysis
+  aiTags         String[]
+  aiQualityScore Int?
+  aiRoomType     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+  @@index([listingId, isPrimary])
+  @@index([listingId, sortOrder])
+}
+
+model Feature {
+  id        String          @id @default(uuid())
+  category  FeatureCategory
+  name      String
+  slug      String          @unique
+  icon      String?
+  sortOrder Int             @default(0)
+  isActive  Boolean         @default(true)
+
+  listings ListingFeature[]
+
+  @@unique([category, name])
+  @@index([category])
+}
+
+model ListingFeature {
+  listingId String
+  featureId String
+  value     String?
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  feature Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([listingId, featureId])
+  @@index([listingId])
+  @@index([featureId])
+}
+
+model ListingPriceHistory {
+  id               String   @id @default(uuid())
+  listingId        String
+  price            Decimal  @db.Decimal(15, 2)
+  previousPrice    Decimal? @db.Decimal(15, 2)
+  changeAmount     Decimal? @db.Decimal(15, 2)
+  changePercentage Decimal? @db.Decimal(5, 2)
+  changeType       String
+  source           String?
+  notes            String?
+  createdAt        DateTime @default(now())
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+  @@index([listingId, createdAt])
+}
+
+// ============================================================================
+// NEIGHBORHOODS
+// ============================================================================
+
+model Neighborhood {
+  id          String  @id @default(uuid())
+  name        String
+  slug        String  @unique
+  displayName String?
+  city        String
+  state       String
+  country     String  @default("DE")
+  parentId    String?
+  level       Int     @default(1)
+  description String?
+  highlights  String[]
+
+  // Stats (JSON for flexibility)
+  stats        Json @default("{}")
+  schoolData   Json @default("{}")
+  crimeData    Json @default("{}")
+  demographics Json @default("{}")
+  amenities    Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  parent   Neighborhood?  @relation("NeighborhoodHierarchy", fields: [parentId], references: [id])
+  children Neighborhood[] @relation("NeighborhoodHierarchy")
+  listings Listing[]
+
+  @@index([slug])
+  @@index([city, state])
+  @@index([parentId])
+}
+
+// ============================================================================
+// SAVED SEARCHES & FAVORITES
+// ============================================================================
+
+model SavedSearch {
+  id                    String   @id @default(uuid())
+  userId                String
+  name                  String
+  criteria              Json
+  notificationsEnabled  Boolean  @default(true)
+  notificationFrequency NotificationFrequency @default(INSTANT)
+  notificationChannels  String[]
+  matchCount            Int      @default(0)
+  lastMatchAt           DateTime?
+  lastNotifiedAt        DateTime?
+  lastViewedAt          DateTime?
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+model Favorite {
+  id        String   @id @default(uuid())
+  userId    String
+  listingId String
+  folderId  String?
+  notes     String?
+
+  // Notification preferences for this listing
+  notifyPriceChange  Boolean @default(true)
+  notifyStatusChange Boolean @default(true)
+  notifyOpenHouse    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing Listing           @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  folder  FavoriteFolder?   @relation(fields: [folderId], references: [id])
+
+  @@unique([userId, listingId])
+  @@index([userId])
+  @@index([listingId])
+  @@index([folderId])
+}
+
+model FavoriteFolder {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  color     String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  favorites Favorite[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+// ============================================================================
+// LEADS & INQUIRIES
+// ============================================================================
+
+model Lead {
+  id        String @id @default(uuid())
+  listingId String?
+  agentId   String?
+  agencyId  String?
+  userId    String?
+
+  // Contact info (for anonymous leads)
+  name     String?
+  email    String?
+  phone    String?
+
+  // Lead details
+  type                   String
+  message                String?
+  preferredContactMethod String  @default("email")
+  preferredContactTime   String?
+
+  // Status
+  status   LeadStatus @default(NEW)
+  priority String     @default("medium")
+  score    Int?
+
+  // Assignment
+  assignedTo String?
+  assignedAt DateTime?
+
+  // Follow-up
+  firstResponseAt       DateTime?
+  responseTimeMinutes   Int?
+  lastContactAt         DateTime?
+  nextFollowUpAt        DateTime?
+
+  // Source tracking
+  source      String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  referrer    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing Listing? @relation(fields: [listingId], references: [id])
+  agent   Agent?   @relation(fields: [agentId], references: [id])
+  user    User?    @relation(fields: [userId], references: [id])
+
+  @@index([listingId])
+  @@index([agentId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// REVIEWS
+// ============================================================================
+
+model Review {
+  id       String @id @default(uuid())
+  agentId  String?
+  agencyId String?
+  userId   String
+
+  rating                 Int
+  title                  String?
+  content                String?
+  ratingCommunication    Int?
+  ratingExpertise        Int?
+  ratingNegotiation      Int?
+  ratingResponsiveness   Int?
+
+  transactionType String?
+  transactionDate DateTime?
+
+  status           String    @default("pending")
+  moderatedAt      DateTime?
+  response         String?
+  responseAt       DateTime?
+  verifiedTransaction Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([userId])
+  @@index([status])
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+
+  type  String
+  title String
+  body  String?
+  data  Json?
+
+  listingId     String?
+  savedSearchId String?
+
+  // Delivery status
+  channels    String[]
+  emailSent   Boolean   @default(false)
+  emailSentAt DateTime?
+  pushSent    Boolean   @default(false)
+  pushSentAt  DateTime?
+  smsSent     Boolean   @default(false)
+  smsSentAt   DateTime?
+
+  // User interaction
+  read      Boolean   @default(false)
+  readAt    DateTime?
+  clicked   Boolean   @default(false)
+  clickedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, read])
+  @@index([createdAt])
+}
