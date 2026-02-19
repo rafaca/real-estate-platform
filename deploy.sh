@@ -5,8 +5,8 @@
 # ============================================
 
 # Configuration - UPDATE THESE VALUES
-DREAMHOST_USER="rafacastello"
-DREAMHOST_HOST="castello.international"
+DREAMHOST_USER="${DREAMHOST_USER:-your_dreamhost_username}"
+DREAMHOST_HOST="${DREAMHOST_HOST:-your_dreamhost_host}"
 REMOTE_PATH="/home/$DREAMHOST_USER/castello.international"
 
 # Colors for output
